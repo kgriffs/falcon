@@ -22,6 +22,27 @@ class _State(Enum):
     EOF = 3
 
 
+def header_property(header_name):
+    """Creates a read-only header property.
+
+    Args:
+        wsgi_header_namename (str): Case-sensitive name of the header as it
+            would appear in the ASGI ``message['headers']`` list.
+
+    Returns:
+        A property instance than can be assigned to a class variable.
+
+    """
+
+    def fget(self):
+        try:
+            return self._headers[header_name] or None
+        except KeyError:
+            return None
+
+    return property(fget)
+
+
 class UvRequestStream:
 
     __slots__ = ('_message', '_channels', '_state', '_has_chunks')

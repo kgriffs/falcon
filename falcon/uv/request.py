@@ -40,11 +40,10 @@ from six.moves import http_cookies
 
 from falcon import DEFAULT_MEDIA_TYPE
 from falcon import errors
-from falcon.request_helpers import header_property
 from falcon import util
 from falcon.media import Handlers
 from falcon.util.uri import parse_host, parse_query_string, unquote_string
-from falcon.uv.request_helpers import UvRequestStream
+from falcon.uv.request_helpers import header_property, UvRequestStream
 
 # NOTE(tbug): In some cases, http_cookies is not a module
 # but a dict-like structure. This fixes that issue.
@@ -390,7 +389,6 @@ class UvRequest(object):
         '_cached_forwarded',
         '_cached_forwarded_prefix',
         '_cached_forwarded_uri',
-        '_cached_headers',
         '_cached_prefix',
         '_cached_relative_uri',
         '_cached_uri',
@@ -468,7 +466,7 @@ class UvRequest(object):
             self.content_type = headers['content-type']
         except KeyError:
             self.content_type = None
-
+"""
         # PERF(kgriffs): Technically, we should spend a few more
         # cycles and parse the content type for real, but
         # this heuristic will work virtually all the time.
@@ -484,6 +482,7 @@ class UvRequest(object):
             self.method not in ('GET', 'HEAD')
         ):
             self._parse_form_urlencoded()
+"""
 
         self.context = self.context_type()
 
@@ -494,16 +493,16 @@ class UvRequest(object):
     # Properties
     # ------------------------------------------------------------------------
 
-    user_agent = helpers.header_property('HTTP_USER_AGENT')
-    auth = helpers.header_property('HTTP_AUTHORIZATION')
+    user_agent = header_property('HTTP_USER_AGENT')
+    auth = header_property('HTTP_AUTHORIZATION')
 
-    expect = helpers.header_property('HTTP_EXPECT')
+    expect = header_property('HTTP_EXPECT')
 
-    if_match = helpers.header_property('HTTP_IF_MATCH')
-    if_none_match = helpers.header_property('HTTP_IF_NONE_MATCH')
-    if_range = helpers.header_property('HTTP_IF_RANGE')
+    if_match = header_property('HTTP_IF_MATCH')
+    if_none_match = header_property('HTTP_IF_NONE_MATCH')
+    if_range = header_property('HTTP_IF_RANGE')
 
-    referer = helpers.header_property('HTTP_REFERER')
+    referer = header_property('HTTP_REFERER')
 
     @property
     def forwarded(self):
@@ -521,7 +520,7 @@ class UvRequest(object):
             # there is no need to spend extra cycles calling get() or
             # checking beforehand whether the key is in the dict.
             try:
-                forwarded = self.env['HTTP_FORWARDED']
+                forwarded = self._headers['forwarded']
             except KeyError:
                 return None
 
@@ -589,14 +588,14 @@ class UvRequest(object):
         # NOTE(kgriffs): Per RFC, a missing accept header is
         # equivalent to '*/*'
         try:
-            return self.env['HTTP_ACCEPT'] or '*/*'
+            return self._headers['accept'] or '*/*'
         except KeyError:
             return '*/*'
 
     @property
     def content_length(self):
         try:
-            value = self.env['CONTENT_LENGTH']
+            value = self._headers['content-length']
         except KeyError:
             return None
 
@@ -622,13 +621,6 @@ class UvRequest(object):
         return value_as_int
 
     @property
-    def bounded_stream(self):
-        if self._bounded_stream is None:
-            self._bounded_stream = self._get_wrapped_wsgi_input()
-
-        return self._bounded_stream
-
-    @property
     def date(self):
         return self.get_header_as_datetime('Date')
 
@@ -643,7 +635,7 @@ class UvRequest(object):
     @property
     def range(self):
         try:
-            value = self.env['HTTP_RANGE']
+            value = self._headers['range']
             if '=' in value:
                 unit, sep, req_range = value.partition('=')
             else:
@@ -680,7 +672,7 @@ class UvRequest(object):
     @property
     def range_unit(self):
         try:
-            value = self.env['HTTP_RANGE']
+            value = self._headers['range']
 
             if '=' in value:
                 unit, sep, req_range = value.partition('=')
@@ -699,13 +691,16 @@ class UvRequest(object):
         # empty string, uwsgi, gunicorn, waitress, and wsgiref all
         # include it even in that case.
         try:
-            return self.env['SCRIPT_NAME']
+            return self._headers['script-name']
         except KeyError:
             return ''
 
     @property
     def scheme(self):
-        return self.env['wsgi.url_scheme']
+        try:
+            return self._message['scheme'].lower()
+        except KeyError:
+            return 'http'
 
     @property
     def forwarded_scheme(self):
@@ -714,7 +709,7 @@ class UvRequest(object):
         # try to avoid calling self.forwarded if we can, since it uses a
         # try...catch that will usually result in a relatively expensive
         # raised exception.
-        if 'HTTP_FORWARDED' in self.env:
+        if 'forwarded' in self._headers:
             first_hop = self.forwarded[0]
             scheme = first_hop.scheme or self.scheme
         else:
@@ -723,9 +718,9 @@ class UvRequest(object):
             # first. Note also that the indexing operator is
             # slightly faster than using get().
             try:
-                scheme = self.env['HTTP_X_FORWARDED_PROTO'].lower()
+                scheme = self.env['x-forwarded-proto'].lower()
             except KeyError:
-                scheme = self.env['wsgi.url_scheme']
+                scheme = self.scheme
 
         return scheme
 
@@ -735,12 +730,10 @@ class UvRequest(object):
     @property
     def uri(self):
         if self._cached_uri is None:
-            scheme = self.env['wsgi.url_scheme']
-
             # PERF: For small numbers of items, '+' is faster
             # than ''.join(...). Concatenation is also generally
             # faster than formatting.
-            value = (scheme + '://' +
+            value = (self.scheme + '://' +
                      self.netloc +
                      self.relative_uri)
 
@@ -779,7 +772,7 @@ class UvRequest(object):
     def prefix(self):
         if self._cached_prefix is None:
             self._cached_prefix = (
-                self.env['wsgi.url_scheme'] + '://' +
+                self.scheme + '://' +
                 self.netloc +
                 self.app
             )
@@ -803,12 +796,17 @@ class UvRequest(object):
             # NOTE(kgriffs): Prefer the host header; the web server
             # isn't supposed to mess with it, so it should be what
             # the client actually sent.
-            host_header = self.env['HTTP_HOST']
+            host_header = self._headers['HOST']
             host, port = parse_host(host_header)
         except KeyError:
-            # PERF(kgriffs): According to PEP-3333, this header
-            # will always be present.
-            host = self.env['SERVER_NAME']
+            # NOTE(kgriffs): Fall back to the ASGI server bindings
+            # list, or default to 'localhost' if all else fails.
+            try:
+                server_bindings = self._message['server']
+            except KeyError:
+                server_bindings = [['localhost', '80']]
+
+            return server_bindings[0][0]
 
         return host
 
@@ -819,7 +817,7 @@ class UvRequest(object):
         # try to avoid calling self.forwarded if we can, since it uses a
         # try...catch that will usually result in a relatively expensive
         # raised exception.
-        if 'HTTP_FORWARDED' in self.env:
+        if 'forwarded' in self._headers:
             first_hop = self.forwarded[0]
             host = first_hop.host or self.host
         else:
@@ -828,7 +826,7 @@ class UvRequest(object):
             # just go for it without wasting time checking it
             # first.
             try:
-                host = self.env['HTTP_X_FORWARDED_HOST']
+                host = self._headers['x-forwarded-host']
             except KeyError:
                 host = self.host
 
@@ -842,23 +840,7 @@ class UvRequest(object):
 
     @property
     def headers(self):
-        # NOTE(kgriffs: First time here will cache the dict so all we
-        # have to do is clone it in the future.
-        if self._cached_headers is None:
-            headers = self._cached_headers = {}
-
-            env = self.env
-            for name, value in env.items():
-                if name.startswith('HTTP_'):
-                    # NOTE(kgriffs): Don't take the time to fix the case
-                    # since headers are supposed to be case-insensitive
-                    # anyway.
-                    headers[name[5:].replace('_', '-')] = value
-
-                elif name in WSGI_CONTENT_HEADERS:
-                    headers[name.replace('_', '-')] = value
-
-        return self._cached_headers.copy()
+        return self._headers
 
     @property
     def params(self):
@@ -870,7 +852,7 @@ class UvRequest(object):
             # NOTE(tbug): We might want to look into parsing
             # cookies ourselves. The SimpleCookie is doing a
             # lot if stuff only required to SEND cookies.
-            cookie_header = self.get_header('Cookie', default='')
+            cookie_header = self._headers.get('cookie', '')
             parser = SimpleCookie()
             for cookie_part in cookie_header.split('; '):
                 try:
@@ -883,7 +865,7 @@ class UvRequest(object):
 
             self._cookies = cookies
 
-        return self._cookies.copy()
+        return self._cookies
 
     @property
     def access_route(self):
@@ -899,19 +881,19 @@ class UvRequest(object):
             # that only masks the problem; the operator needs to be
             # aware that an upstream proxy is malfunctioning.
 
-            if 'HTTP_FORWARDED' in self.env:
+            if 'forwarded' in self._headers:
                 self._cached_access_route = []
                 for hop in self.forwarded:
                     if hop.src is not None:
                         host, __ = parse_host(hop.src)
                         self._cached_access_route.append(host)
-            elif 'HTTP_X_FORWARDED_FOR' in self.env:
-                addresses = self.env['HTTP_X_FORWARDED_FOR'].split(',')
+            elif 'x-forwarded-for' in self._headers:
+                addresses = self._headers['x-forwarded-for'].split(',')
                 self._cached_access_route = [ip.strip() for ip in addresses]
-            elif 'HTTP_X_REAL_IP' in self.env:
-                self._cached_access_route = [self.env['HTTP_X_REAL_IP']]
-            elif 'REMOTE_ADDR' in self.env:
-                self._cached_access_route = [self.env['REMOTE_ADDR']]
+            elif 'x-real-ip' in self._headers:
+                self._cached_access_route = [self._headers['x-real-ip']]
+            elif 'remote-addr' in self._headers:
+                self._cached_access_route = [self._headers['remote-addr']]
             else:
                 self._cached_access_route = []
 
@@ -919,42 +901,52 @@ class UvRequest(object):
 
     @property
     def remote_addr(self):
-        return self.env.get('REMOTE_ADDR')
+        return self.env.get('remote-addr')
 
     @property
     def port(self):
         try:
-            host_header = self.env['HTTP_HOST']
+            host_header = self._headers['host']
 
-            default_port = 80 if self.env['wsgi.url_scheme'] == 'http' else 443
-            host, port = parse_host(host_header, default_port=default_port)
+            default_port = 80 if self.scheme == 'http' else 443
+            __, port = parse_host(host_header, default_port=default_port)
         except KeyError:
             # NOTE(kgriffs): Normalize to an int, since that is the type
             # returned by parse_host().
             #
+            # NOTE(kgriffs): Fall back to the ASGI server bindings
+            # list, or default to '80' if all else fails.
+            try:
+                server_bindings = self._message['server']
+            except KeyError:
+                server_bindings = [['localhost', '80']]
+
             # NOTE(kgriffs): In the case that SERVER_PORT was used,
             # PEP-3333 requires that the port never be an empty string.
-            port = int(self.env['SERVER_PORT'])
+            port = int(server_bindings[0][1])
 
         return port
 
     @property
     def netloc(self):
-        env = self.env
-        protocol = env['wsgi.url_scheme']
-
         # NOTE(kgriffs): According to PEP-3333 we should first
         # try to use the Host header if present.
         #
         # PERF(kgriffs): try..except is faster than get() when we
         # expect the key to be present most of the time.
         try:
-            netloc_value = env['HTTP_HOST']
+            netloc_value = self._header['host']
         except KeyError:
-            netloc_value = env['SERVER_NAME']
+            # NOTE(kgriffs): Fall back to the ASGI server bindings
+            # list, or default to localhost if all else fails.
+            try:
+                server_bindings = self._message['server']
+            except KeyError:
+                server_bindings = [['localhost', '80']]
 
-            port = env['SERVER_PORT']
-            if protocol == 'https':
+            netloc_value, port = server_bindings[0]
+
+            if self.scheme == 'https':
                 if port != '443':
                     netloc_value += ':' + port
             else:
@@ -974,9 +966,9 @@ class UvRequest(object):
         )
 
         # Consume the stream
-        raw = self.bounded_stream.read()
+        raw = await self.stream.read()
 
-        # Deserialize and Return
+        # Deserialize and return
         self._media = handler.deserialize(raw)
         return self._media
 
@@ -1056,26 +1048,10 @@ class UvRequest(object):
 
         """
 
-        wsgi_name = name.upper().replace('-', '_')
-
         # Use try..except to optimize for the header existing in most cases
         try:
-            # Don't take the time to cache beforehand, using HTTP naming.
-            # This will be faster, assuming that most headers are looked
-            # up only once, and not all headers will be requested.
-            return self.env['HTTP_' + wsgi_name]
-
+            return self._headers[name.lower()]
         except KeyError:
-            # NOTE(kgriffs): There are a couple headers that do not
-            # use the HTTP prefix in the env, so try those. We expect
-            # people to usually just use the relevant helper properties
-            # to access these instead of .get_header.
-            if wsgi_name in WSGI_CONTENT_HEADERS:
-                try:
-                    return self.env[wsgi_name]
-                except KeyError:
-                    pass
-
             if not required:
                 return default
 
@@ -1106,7 +1082,14 @@ class UvRequest(object):
         """
 
         try:
-            http_date = self.get_header(header, required=required)
+            try:
+                http_date = self._headers[header.lower()]
+            except KeyError:
+                if not required:
+                    return None
+
+                raise errors.HTTPMissingHeader(name)
+
             return util.http_date_to_dt(http_date, obs_date=obs_date)
         except TypeError:
             # When the header does not exist and isn't required
@@ -1115,7 +1098,7 @@ class UvRequest(object):
             msg = ('It must be formatted according to RFC 7231, '
                    'Section 7.1.1.1')
             raise errors.HTTPInvalidHeader(msg, header)
-
+'''
     def get_param(self, name, required=False, store=None, default=None):
         """Return the raw value of a query string parameter as a string.
 
@@ -1515,42 +1498,12 @@ class UvRequest(object):
             store[name] = val
 
         return val
-
-    def log_error(self, message):
-        """Write an error message to the server's log.
-
-        Prepends timestamp and request info to message, and writes the
-        result out to the WSGI server's error stream (`wsgi.error`).
-
-        Args:
-            message (str or unicode): Description of the problem. On Python 2,
-                instances of ``unicode`` will be converted to UTF-8.
-
-        """
-
-        if self.query_string:
-            query_string_formatted = '?' + self.query_string
-        else:
-            query_string_formatted = ''
-
-        log_line = (
-            DEFAULT_ERROR_LOG_FORMAT.
-            format(now(), self.method, self.path, query_string_formatted)
-        )
-
-        if six.PY3:
-            self._wsgierrors.write(log_line + message + '\n')
-        else:
-            if isinstance(message, unicode):
-                message = message.encode('utf-8')
-
-            self._wsgierrors.write(log_line.encode('utf-8'))
-            self._wsgierrors.write(message + '\n')
+'''
 
     # ------------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------------
-
+'''
     def _parse_form_urlencoded(self):
         content_length = self.content_length
         if not content_length:
@@ -1578,7 +1531,7 @@ class UvRequest(object):
             )
 
             self._params.update(extra_params)
-
+'''
 
 # PERF: To avoid typos and improve storage space and speed over a dict.
 class RequestOptions(object):
