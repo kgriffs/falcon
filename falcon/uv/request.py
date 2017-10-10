@@ -955,8 +955,7 @@ class UvRequest(object):
 
         return netloc_value
 
-    @property
-    def media(self):
+    async def read_media(self):
         if self._media:
             return self._media
 

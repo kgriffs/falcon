@@ -16,6 +16,12 @@
 
 import falcon
 
+async def thing():
+    pass
+
+def foo():
+    await thing()
+
 
 class UvAPI(falcon.API):
     async def __call__(self, message, channels):
@@ -27,5 +33,7 @@ class UvAPI(falcon.API):
             ],
             'content': content
         }
+
+        foo()
 
         await channels['reply'].send(response)

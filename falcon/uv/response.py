@@ -14,13 +14,10 @@
 
 """Response class."""
 
-from six import PY2
-from six import string_types as STRING_TYPES
-
 # NOTE(tbug): In some cases, http_cookies is not a module
 # but a dict-like structure. This fixes that issue.
 # See issue https://github.com/falconry/falcon/issues/556
-from six.moves import http_cookies
+from http.cookies import CookieError, SimpleCookie
 
 from falcon import DEFAULT_MEDIA_TYPE
 from falcon.media import Handlers
@@ -33,9 +30,6 @@ from falcon.response_helpers import (
 from falcon.util import dt_to_http, TimezoneGMT
 from falcon.util.uri import encode as uri_encode
 from falcon.util.uri import encode_value as uri_encode_value
-
-SimpleCookie = http_cookies.SimpleCookie
-CookieError = http_cookies.CookieError
 
 GMT_TIMEZONE = TimezoneGMT()
 
@@ -143,7 +137,7 @@ class Response(object):
     # Child classes may override this
     context_type = dict
 
-    def __init__(self, options=None):
+    def __init__(self, channels, options=None):
         self.status = '200 OK'
         self._headers = {}
 
@@ -292,10 +286,6 @@ class Response(object):
         if not is_ascii_encodable(value):
             raise ValueError('"value" is not ascii encodable')
 
-        if PY2:
-            name = str(name)
-            value = str(value)
-
         if self._cookies is None:
             self._cookies = SimpleCookie()
 
@@ -401,13 +391,6 @@ class Response(object):
                 Under Python 2.x, the ``unicode`` type is also accepted,
                 although such strings are also limited to US-ASCII.
         """
-        if PY2:
-            # NOTE(kgriffs): uwsgi fails with a TypeError if any header
-            # is not a str, so do the conversion here. It's actually
-            # faster to not do an isinstance check. str() will encode
-            # to US-ASCII.
-            name = str(name)
-            value = str(value)
 
         # NOTE(kgriffs): normalize name by lowercasing it
         self._headers[name.lower()] = value
@@ -446,13 +429,6 @@ class Response(object):
                 although such strings are also limited to US-ASCII.
 
         """
-        if PY2:
-            # NOTE(kgriffs): uwsgi fails with a TypeError if any header
-            # is not a str, so do the conversion here. It's actually
-            # faster to not do an isinstance check. str() will encode
-            # to US-ASCII.
-            name = str(name)
-            value = str(value)
 
         name = name.lower()
         if name in self._headers:
@@ -490,20 +466,8 @@ class Response(object):
         # normalize the header names.
         _headers = self._headers
 
-        if PY2:
-            for name, value in headers:
-                # NOTE(kgriffs): uwsgi fails with a TypeError if any header
-                # is not a str, so do the conversion here. It's actually
-                # faster to not do an isinstance check. str() will encode
-                # to US-ASCII.
-                name = str(name)
-                value = str(value)
-
-                _headers[name.lower()] = value
-
-        else:
-            for name, value in headers:
-                _headers[name.lower()] = value
+        for name, value in headers:
+            _headers[name.lower()] = value
 
     def add_link(self, target, rel, title=None, title_star=None,
                  anchor=None, hreflang=None, type_hint=None):
@@ -603,7 +567,7 @@ class Response(object):
             value += '; type="' + type_hint + '"'
 
         if hreflang is not None:
-            if isinstance(hreflang, STRING_TYPES):
+            if isinstance(hreflang, str):
                 value += '; hreflang=' + hreflang
             else:
                 value += '; '
@@ -611,13 +575,6 @@ class Response(object):
 
         if anchor is not None:
             value += '; anchor="' + uri_encode(anchor) + '"'
-
-        if PY2:
-            # NOTE(kgriffs): uwsgi fails with a TypeError if any header
-            # is not a str, so do the conversion here. It's actually
-            # faster to not do an isinstance check. str() will encode
-            # to US-ASCII.
-            value = str(value)
 
         _headers = self._headers
         if 'link' in _headers:
@@ -765,24 +722,19 @@ class Response(object):
         if set_content_type:
             self._headers['content-type'] = media_type
 
-    def _wsgi_headers(self, media_type=None, py2=PY2):
-        """Convert headers into the format expected by WSGI servers.
+    def _asgi_headers(self, media_type=None):
+        """Convert headers into the format expected by ASGI servers.
 
         Args:
             media_type: Default media type to use for the Content-Type
-                header if the header was not set explicitly (default ``None``).
-
+                header if the header was not set explicitly
+                (default ``None``).
         """
 
         headers = self._headers
         self._set_media_type(media_type)
 
-        if py2:
-            # PERF(kgriffs): Don't create an extra list object if
-            # it isn't needed.
-            items = headers.items()
-        else:
-            items = list(headers.items())
+        items = list(headers.items())
 
         if self._cookies is not None:
             # PERF(tbug):
@@ -795,40 +747,5 @@ class Response(object):
             # is still ~17% faster, so don't use .output()
             items += [('set-cookie', c.OutputString())
                       for c in self._cookies.values()]
+
         return items
-
-
-class ResponseOptions(object):
-    """Defines a set of configurable response options.
-
-    An instance of this class is exposed via :any:`API.resp_options` for
-    configuring certain :py:class:`~.Response` behaviors.
-
-    Attributes:
-        secure_cookies_by_default (bool): Set to ``False`` in development
-            environments to make the `secure` attribute for all cookies
-            default to ``False``. This can make testing easier by
-            not requiring HTTPS. Note, however, that this setting can
-            be overridden via `set_cookie()`'s `secure` kwarg.
-
-        default_media_type (str): The default media-type to use when
-            deserializing a response. This value is normally set to the media
-            type provided when a :class:`falcon.API` is initialized; however,
-            if created independently, this will default to the
-            ``DEFAULT_MEDIA_TYPE`` specified by Falcon.
-
-        media_handlers (Handlers): A dict-like object that allows you to
-            configure the media-types that you would like to handle.
-            By default, a handler is provided for the ``application/json``
-            media type.
-    """
-    __slots__ = (
-        'secure_cookies_by_default',
-        'default_media_type',
-        'media_handlers',
-    )
-
-    def __init__(self):
-        self.secure_cookies_by_default = True
-        self.default_media_type = DEFAULT_MEDIA_TYPE
-        self.media_handlers = Handlers()
