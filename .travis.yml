@@ -20,6 +20,8 @@ matrix:
           env: TOXENV=pep8
         - python: 2.7
           env: TOXENV=pep8-examples
+        - python: 3.5
+          env: TOXENV=pep8-py35
         - python: 2.6
           env: TOXENV=py26
         - python: 2.7

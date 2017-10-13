@@ -34,7 +34,7 @@ from falcon.util.uri import encode_value as uri_encode_value
 GMT_TIMEZONE = TimezoneGMT()
 
 
-class Response(object):
+class UvResponse(object):
     """Represents an HTTP response to a client request.
 
     Note:
@@ -137,7 +137,7 @@ class Response(object):
     # Child classes may override this
     context_type = dict
 
-    def __init__(self, channels, options=None):
+    def __init__(self, options=None):
         self.status = '200 OK'
         self._headers = {}
 
@@ -734,7 +734,8 @@ class Response(object):
         headers = self._headers
         self._set_media_type(media_type)
 
-        items = list(headers.items())
+        items = [[name.encode('utf-8'), value.encode('utf-8')]
+                 for name, value in headers.items()]
 
         if self._cookies is not None:
             # PERF(tbug):
@@ -745,7 +746,7 @@ class Response(object):
             #
             # Even without the .split("\\r\\n"), the below
             # is still ~17% faster, so don't use .output()
-            items += [('set-cookie', c.OutputString())
+            items += [[b'set-cookie', c.OutputString().encode('utf-8')])
                       for c in self._cookies.values()]
 
         return items

@@ -413,7 +413,7 @@ class UvRequest(object):
     _wsgi_input_type_known = False
     _always_wrap_wsgi_input = False
 
-    def __init__(self, message, channels):
+    def __init__(self, message, channels, options=None):
         self.message = message
         self.options = options if options else RequestOptions()
 
@@ -466,7 +466,7 @@ class UvRequest(object):
             self.content_type = headers['content-type']
         except KeyError:
             self.content_type = None
-"""
+
         # PERF(kgriffs): Technically, we should spend a few more
         # cycles and parse the content type for real, but
         # this heuristic will work virtually all the time.
@@ -482,7 +482,6 @@ class UvRequest(object):
             self.method not in ('GET', 'HEAD')
         ):
             self._parse_form_urlencoded()
-"""
 
         self.context = self.context_type()
 
@@ -1097,7 +1096,7 @@ class UvRequest(object):
             msg = ('It must be formatted according to RFC 7231, '
                    'Section 7.1.1.1')
             raise errors.HTTPInvalidHeader(msg, header)
-'''
+
     def get_param(self, name, required=False, store=None, default=None):
         """Return the raw value of a query string parameter as a string.
 
@@ -1497,18 +1496,18 @@ class UvRequest(object):
             store[name] = val
 
         return val
-'''
+
 
     # ------------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------------
-'''
+
     def _parse_form_urlencoded(self):
         content_length = self.content_length
         if not content_length:
             return
 
-        body = self.stream.read(content_length)
+        body = await self.stream.read()
 
         # NOTE(kgriffs): According to http://goo.gl/6rlcux the
         # body should be US-ASCII. Enforcing this also helps
@@ -1530,7 +1529,7 @@ class UvRequest(object):
             )
 
             self._params.update(extra_params)
-'''
+
 
 # PERF: To avoid typos and improve storage space and speed over a dict.
 class RequestOptions(object):

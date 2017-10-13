@@ -14,11 +14,13 @@
 
 """Uvicorn specializations."""
 
-__all__ = ['UvAPI', 'UvAPI']
+__all__ = ['UvAPI', 'UvRequest', 'UvResponse']
 
 import sys
 
-assert sys.version_info >= (3, 5)
+if sys.version_info < (3, 5):
+    raise RuntimeError('The uv module requires Python 3.x >= 3.5')
 
 from falcon.uv.api import UvAPI  # NOQA
 from falcon.uv.request import UvRequest  # NOQA
+from falcon.uv.response import UvResponse  # NOQA
