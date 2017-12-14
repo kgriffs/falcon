@@ -38,6 +38,10 @@ _ALL_ALLOWED = _UNRESERVED + _DELIMITERS
 
 _HEX_DIGITS = '0123456789ABCDEFabcdef'
 
+# PERF(kgriffs): Switch to an alternative algorithm that is more efficient
+# for decoding large strings
+_LARGE_URI_THRESHOLD = 1024 * 10
+
 
 def _create_char_encoder(allowed_chars):
 
@@ -210,7 +214,14 @@ if six.PY2:  # NOQA: C901 - Work around a bug in flake8 McCabe scoring
         only_ascii = True
 
         tokens = decoded_uri.split('%')
-        decoded_uri = tokens[0]
+
+        is_large = len(encoded_uri) > _LARGE_URI_THRESHOLD
+
+        if is_large:
+            decoded_parts = []
+        else:
+            decoded_parts = ''
+
         for token in tokens[1:]:
             token_partial = token[:2]
             try:
@@ -218,8 +229,18 @@ if six.PY2:  # NOQA: C901 - Work around a bug in flake8 McCabe scoring
             except KeyError:
                 char, byte = '%', 0
 
-            decoded_uri += char + (token[2:] if byte else token)
+            if is_large:
+                decoded_parts.append(char)
+                decoded_parts.append(token[2:] if byte else token)
+            else:
+                decoded_parts += char + (token[2:] if byte else token)
+
             only_ascii = only_ascii and (byte <= 127)
+
+        if is_large:
+            decoded_uri = tokens[0] + ''.join(decoded_parts)
+        else:
+            decoded_uri = tokens[0] + decoded_parts
 
         # PERF(kgriffs): Only spend the time to do this if there
         # were non-ascii bytes found in the string.
@@ -228,7 +249,7 @@ if six.PY2:  # NOQA: C901 - Work around a bug in flake8 McCabe scoring
 
         return decoded_uri
 
-else:
+else:  # PY3
 
     # This map construction is based on urllib
     _HEX_TO_BYTE = dict(((a + b).encode(), bytes([int(a + b, 16)]))
@@ -269,14 +290,31 @@ else:
         # PERF(kgriffs): This was found to be faster than using
         # a regex sub call or list comprehension with a join.
         tokens = decoded_uri.split(b'%')
-        decoded_uri = tokens[0]
+
+        is_large = len(encoded_uri) > _LARGE_URI_THRESHOLD
+
+        if is_large:
+            decoded_parts = []
+        else:
+            decoded_parts = ''
+
         for token in tokens[1:]:
             token_partial = token[:2]
             try:
-                decoded_uri += _HEX_TO_BYTE[token_partial] + token[2:]
+                part = _HEX_TO_BYTE[token_partial] + token[2:]
             except KeyError:
                 # malformed percentage like "x=%" or "y=%+"
-                decoded_uri += b'%' + token
+                part = b'%' + token
+
+            if is_large:
+                decoded_parts.append(part)
+            else:
+                decoded_parts += part
+
+        if is_large:
+            decoded_parts = ''.join(decoded_parts)
+
+        decoded_uri = tokens[0] + decoded_parts
 
         # Convert back to str
         return decoded_uri.decode('utf-8', 'replace')

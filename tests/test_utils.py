@@ -202,6 +202,17 @@ class TestFalconUtils(object):
             'http://example.com?x=ab%2Bcd%3D42%2C9'
         ) == 'http://example.com?x=ab+cd=42,9'
 
+    def test_uri_decode_large(self):
+        encoded_string = ''
+        decoded_string = ''
+
+        for __ in range(1024 * 1024):
+            val = random.randint(33, 126)  # Printable ASCII chars
+            encoded_string += '%{:02X}'.format(val)
+            decoded_string += chr(val)
+
+        assert uri.decode(encoded_string) == decoded_string
+
     def test_prop_uri_encode_models_stdlib_quote(self):
         equiv_quote = functools.partial(
             six.moves.urllib.parse.quote, safe=uri._ALL_ALLOWED
