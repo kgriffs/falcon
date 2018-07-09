@@ -23,7 +23,6 @@ WEBDAV_METHODS = (
 
 COMBINED_METHODS = HTTP_METHODS + WEBDAV_METHODS
 
-
 # NOTE(kgriffs): According to RFC 7159, most JSON parsers assume
 # UTF-8 and so it is the recommended default charset going forward,
 # and indeed, other charsets should not be specified to ensure

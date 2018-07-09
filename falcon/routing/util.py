@@ -27,6 +27,23 @@ class SuffixedMethodNotFoundError(Exception):
         self.message = message
 
 
+def get_responder(name, resource, suffix=None):
+    try:
+        if suffix:
+            responder_name += '_' + suffix
+
+        responder = getattr(resource, responder_name)
+    except AttributeError:
+        # resource does not implement this method
+        return None
+
+    # Usually expect a method, but any callable will do
+    if callable(responder):
+        return responder
+
+    return None
+
+
 # NOTE(kgriffs): Published method; take care to avoid breaking changes.
 def compile_uri_template(template):
     """Compile the given URI template string into a pattern matcher.
@@ -111,19 +128,10 @@ def map_http_methods(resource, suffix=None):
     method_map = {}
 
     for method in COMBINED_METHODS:
-        try:
-            responder_name = 'on_' + method.lower()
-            if suffix:
-                responder_name += '_' + suffix
-
-            responder = getattr(resource, responder_name)
-        except AttributeError:
-            # resource does not implement this method
-            pass
-        else:
-            # Usually expect a method, but any callable will do
-            if callable(responder):
-                method_map[method] = responder
+        responder_name = 'on_' + method.lower()
+        responder = get_responder(responder_name, resource, suffix)
+        if responder:
+            method_map[method] = responder
 
     # If suffix is specified and doesn't map to any methods, raise an error
     if suffix and not method_map:

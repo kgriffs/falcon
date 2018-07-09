@@ -196,80 +196,21 @@ class API(object):
 
         req = self._request_type(env, options=self.req_options)
         resp = self._response_type(options=self.resp_options)
-        resource = None
-        params = {}
-
-        dependent_mw_resp_stack = []
-        mw_req_stack, mw_rsrc_stack, mw_resp_stack = self._middleware
-
-        req_succeeded = False
 
         try:
-            try:
-                # NOTE(ealogar): The execution of request middleware
-                # should be before routing. This will allow request mw
-                # to modify the path.
-                # NOTE: if flag set to use independent middleware, execute
-                # request middleware independently. Otherwise, only queue
-                # response middleware after request middleware succeeds.
-                if self._independent_middleware:
-                    for process_request in mw_req_stack:
-                        process_request(req, resp)
-                else:
-                    for process_request, process_response in mw_req_stack:
-                        if process_request:
-                            process_request(req, resp)
-                        if process_response:
-                            dependent_mw_resp_stack.insert(0, process_response)
+            # NOTE(warsaw): Moved this to inside the try except
+            # because it is possible when using object-based
+            # traversal for _get_responder() to fail.  An example is
+            # a case where an object does not have the requested
+            # next-hop child resource. In that case, the object
+            # being asked to dispatch to its child will raise an
+            # HTTP exception signalling the problem, e.g. a 404.
+            responder, params, resource, uri_template = self._get_responder(req)
+        except Exception as ex:
+            if not self._handle_exception(req, resp, ex, params):
+                raise
 
-                # NOTE(warsaw): Moved this to inside the try except
-                # because it is possible when using object-based
-                # traversal for _get_responder() to fail.  An example is
-                # a case where an object does not have the requested
-                # next-hop child resource. In that case, the object
-                # being asked to dispatch to its child will raise an
-                # HTTP exception signalling the problem, e.g. a 404.
-                responder, params, resource, req.uri_template = self._get_responder(req)
-            except Exception as ex:
-                if not self._handle_exception(req, resp, ex, params):
-                    raise
-            else:
-                try:
-                    # NOTE(kgriffs): If the request did not match any
-                    # route, a default responder is returned and the
-                    # resource is None. In that case, we skip the
-                    # resource middleware methods.
-                    if resource is not None:
-                        # Call process_resource middleware methods.
-                        for process_resource in mw_rsrc_stack:
-                            process_resource(req, resp, resource, params)
-
-                    responder(req, resp, **params)
-                    req_succeeded = True
-                except Exception as ex:
-                    if not self._handle_exception(req, resp, ex, params):
-                        raise
-        finally:
-            # NOTE(kgriffs): It may not be useful to still execute
-            # response middleware methods in the case of an unhandled
-            # exception, but this is done for the sake of backwards
-            # compatibility, since it was incidentally the behavior in
-            # the 1.0 release before this section of the code was
-            # reworked.
-
-            # Call process_response middleware methods.
-            for process_response in mw_resp_stack or dependent_mw_resp_stack:
-                try:
-                    process_response(req, resp, resource, req_succeeded)
-                except Exception as ex:
-                    if not self._handle_exception(req, resp, ex, params):
-                        raise
-
-                    req_succeeded = False
-
-        #
-        # Set status and headers
-        #
+        self._dispatch(req, resp, responder, params, resource, uri_template)
 
         # NOTE(kgriffs): While not specified in the spec that the status
         # must be of type str (not unicode on Py27), some WSGI servers
@@ -577,6 +518,76 @@ class API(object):
     # Helpers that require self
     # ------------------------------------------------------------------------
 
+    def _dispatch(self, req, resp, responder, params, resource, uri_template):
+        # NOTE(kgriffs): When editing this method, be sure to also update
+        #   the overridden method in falcon.asgi.app. Yes, I know this is
+        #   not DRY, but since Python doesn't have a preprocessor or
+        #   macro system, things would get ugly fast if we were to try to
+        #   do something that didn't involve importing an additional dep
+        #   such as Jinja (and even then things would still be a bit of
+        #   a pain, probably not worth it.)
+
+        req.uri_template = uri_template
+
+        mw_req_stack, mw_rsrc_stack, mw_resp_stack = self._middleware
+        dependent_mw_resp_stack = []
+        req_succeeded = False
+
+        try:
+            try:
+                # NOTE(ealogar): The execution of request middleware
+                # should be before routing. This will allow request mw
+                # to modify the path.
+                # NOTE: if flag set to use independent middleware, execute
+                # request middleware independently. Otherwise, only queue
+                # response middleware after request middleware succeeds.
+                if self._independent_middleware:
+                    for process_request in mw_req_stack:
+                        process_request(req, resp)
+                else:
+                    for process_request, process_response in mw_req_stack:
+                        if process_request:
+                            process_request(req, resp)
+                        if process_response:
+                            dependent_mw_resp_stack.insert(0, process_response)
+
+            except Exception as ex:
+                if not self._handle_exception(req, resp, ex, params):
+                    raise
+            else:
+                try:
+                    # NOTE(kgriffs): If the request did not match any
+                    # route, a default responder is returned and the
+                    # resource is None. In that case, we skip the
+                    # resource middleware methods.
+                    if resource is not None:
+                        # Call process_resource middleware methods.
+                        for process_resource in mw_rsrc_stack:
+                            process_resource(req, resp, resource, params)
+
+                    responder(req, resp, **params)
+                    req_succeeded = True
+                except Exception as ex:
+                    if not self._handle_exception(req, resp, ex, params):
+                        raise
+        finally:
+            # NOTE(kgriffs): It may not be useful to still execute
+            # response middleware methods in the case of an unhandled
+            # exception, but this is done for the sake of backwards
+            # compatibility, since it was incidentally the behavior in
+            # the 1.0 release before this section of the code was
+            # reworked.
+
+            # Call process_response middleware methods.
+            for process_response in mw_resp_stack or dependent_mw_resp_stack:
+                try:
+                    process_response(req, resp, resource, req_succeeded)
+                except Exception as ex:
+                    if not self._handle_exception(req, resp, ex, params):
+                        raise
+
+                    req_succeeded = False
+
     def _get_responder(self, req):
         """Search routes for a matching responder.
 
@@ -695,6 +706,9 @@ class API(object):
             bool: ``True`` if a handler was found and called for the
             exception, ``False`` otherwise.
         """
+
+        # NOTE(kgriffs): If changing anything here, sync changes with
+        #   falcon.asgi.app
 
         for err_type, err_handler in self._error_handlers:
             if isinstance(ex, err_type):

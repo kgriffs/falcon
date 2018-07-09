@@ -178,13 +178,16 @@ class Request(object):
             :attr:`forwarded_host` in order to reconstruct the
             original URI.
         path (str): Path portion of the request URI (not including query
-            string).
+            string), already percent-decoded.
 
             Note:
                 `req.path` may be set to a new value by a `process_request()`
                 middleware method in order to influence routing.
         query_string (str): Query string portion of the request URI, without
-            the preceding '?' character.
+            the preceding '?' character. Unlike the parsed params also
+            provided by the ``Request``class and derived
+            from the query string, the ``query_string`` property provides
+            access to the full, non-URL-decoded string.
         uri_template (str): The template for the route that was matched for
             this request. May be ``None`` if the request has not yet been
             routed, as would be the case for `process_request()` middleware
@@ -382,6 +385,7 @@ class Request(object):
 
     __slots__ = (
         '__dict__',
+        '_asgi_data',
         '_bounded_stream',
         '_cached_access_route',
         '_cached_forwarded',
@@ -412,15 +416,9 @@ class Request(object):
     _wsgi_input_type_known = False
     _always_wrap_wsgi_input = False
 
-    def __init__(self, env, options=None):
-        self.env = env
-        self.options = options if options else RequestOptions()
-
+    def __init__(self, env, options=None)
         self._wsgierrors = env['wsgi.errors']
         self.method = env['REQUEST_METHOD']
-
-        self.uri_template = None
-        self._media = None
 
         # NOTE(kgriffs): PEP 3333 specifies that PATH_INFO may be the
         # empty string, so normalize it in that case.
@@ -431,43 +429,19 @@ class Request(object):
             # "bytes tunneled as latin-1" and must be encoded back
             path = path.encode('latin1').decode('utf-8', 'replace')
 
-        if (self.options.strip_url_path_trailing_slash and
-                len(path) != 1 and path.endswith('/')):
-            self.path = path[:-1]
-        else:
-            self.path = path
+        self.path = path
 
         # PERF(ueg1990): try/catch cheaper and faster (and more Pythonic)
         try:
             self.query_string = env['QUERY_STRING']
         except KeyError:
             self.query_string = ''
-            self._params = {}
+
+        # PERF(kgriffs): Content-Type is often not present, so don't use
+        #   try..except here.
+        if 'CONTENT_TYPE' in env:
+            self.content_type = env['CONTENT_TYPE']
         else:
-            if self.query_string:
-                self._params = parse_query_string(
-                    self.query_string,
-                    keep_blank_qs_values=self.options.keep_blank_qs_values,
-                    parse_qs_csv=self.options.auto_parse_qs_csv,
-                )
-
-            else:
-                self._params = {}
-
-        self._cookies = None
-
-        self._cached_access_route = None
-        self._cached_forwarded = None
-        self._cached_forwarded_prefix = None
-        self._cached_forwarded_uri = None
-        self._cached_headers = None
-        self._cached_prefix = None
-        self._cached_relative_uri = None
-        self._cached_uri = None
-
-        try:
-            self.content_type = self.env['CONTENT_TYPE']
-        except KeyError:
             self.content_type = None
 
         # NOTE(kgriffs): Wrap wsgi.input if needed to make read() more robust,
@@ -492,25 +466,9 @@ class Request(object):
             self._bounded_stream = self.stream
         else:
             self.stream = env['wsgi.input']
-            self._bounded_stream = None  # Lazy wrapping
 
-        # PERF(kgriffs): Technically, we should spend a few more
-        # cycles and parse the content type for real, but
-        # this heuristic will work virtually all the time.
-        if (
-            self.options.auto_parse_form_urlencoded and
-            self.content_type is not None and
-            'application/x-www-form-urlencoded' in self.content_type and
+        self._init_common(env, options)
 
-            # NOTE(kgriffs): Within HTTP, a payload for a GET or HEAD
-            # request has no defined semantics, so we don't expect a
-            # body in those cases. We would normally not expect a body
-            # for OPTIONS either, but RFC 7231 does allow for it.
-            self.method not in ('GET', 'HEAD')
-        ):
-            self._parse_form_urlencoded()
-
-        self.context = self.context_type()
 
     def __repr__(self):
         return '<%s: %s %r>' % (self.__class__.__name__, self.method, self.url)
@@ -518,6 +476,9 @@ class Request(object):
     # ------------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------------
+
+    # NOTE(kgriffs): If you change anything below, be sure to also update
+    #   the ASGI Request class.
 
     user_agent = helpers.header_property('HTTP_USER_AGENT')
     auth = helpers.header_property('HTTP_AUTHORIZATION')
@@ -708,7 +669,7 @@ class Request(object):
             try:
                 scheme = self.env['HTTP_X_FORWARDED_PROTO'].lower()
             except KeyError:
-                scheme = self.env['wsgi.url_scheme']
+                scheme = self.scheme
 
         return scheme
 
@@ -757,7 +718,7 @@ class Request(object):
     def prefix(self):
         if self._cached_prefix is None:
             self._cached_prefix = (
-                self.env['wsgi.url_scheme'] + '://' +
+                self.scheme + '://' +
                 self.netloc +
                 self.app
             )
@@ -904,7 +865,7 @@ class Request(object):
         try:
             host_header = self.env['HTTP_HOST']
 
-            default_port = 80 if self.env['wsgi.url_scheme'] == 'http' else 443
+            default_port = 80 if self.scheme == 'http' else 443
             host, port = parse_host(host_header, default_port=default_port)
         except KeyError:
             # NOTE(kgriffs): Normalize to an int, since that is the type
@@ -1693,6 +1654,71 @@ class Request(object):
     # Helpers
     # ------------------------------------------------------------------------
 
+    def _init_common(self, env, options=None):
+        """Final initializations, common across WSGI and ASGI.
+
+        Args:
+            env(dict): WSGI environ or ASGI scope
+            options(RequestOptions): Options to respect for this request
+
+        Expects the following to have already been initialized:
+
+            * self.path
+            * self.query_string
+
+        """
+
+        # NOTE(kgriffs): We include this attribute in both classes so that
+        #   any code that wants to short-circuit reading data via the file-
+        #   like stream interface can check quickly without having to use
+        #   relatively slow introspection methods.
+        self._asgi_data = None
+
+        # =====================================================================
+        # Dependent on the following already being initialized:
+        #
+        #   * self.path
+        #   * self.query_string
+        #
+        # =====================================================================
+
+        if (options.strip_url_path_trailing_slash and
+                len(path) != 1 and self.path.endswith('/')):
+            self.path = self.path[:-1]
+
+        if self.query_string:
+            self._params = parse_query_string(
+                self.query_string,
+                keep_blank_qs_values=options.keep_blank_qs_values,
+                parse_qs_csv=options.auto_parse_qs_csv,
+            )
+
+        else:
+            self._params = {}
+
+        # =====================================================================
+
+        self.env = env
+        self.options = options if options else RequestOptions()
+
+        self.uri_template = None
+        self._media = None
+
+        self.context = self.context_type()
+
+        self._cookies = None
+
+        self._cached_access_route = None
+        self._cached_forwarded = None
+        self._cached_forwarded_prefix = None
+        self._cached_forwarded_uri = None
+        self._cached_headers = None
+        self._cached_prefix = None
+        self._cached_relative_uri = None
+        self._cached_uri = None
+
+        self._bounded_stream = None  # Lazy wrapping
+
     def _get_wrapped_wsgi_input(self):
         try:
             content_length = self.content_length or 0
@@ -1802,6 +1828,15 @@ class RequestOptions(object):
             configure the media-types that you would like to handle.
             By default, a handler is provided for the ``application/json``
             media type.
+
+        asgi_buffered_req_max_size (int): Maximum number of bytes that
+            will be buffered for an ASGI request body when the target resource
+            does not support streaming. If the client attempts to send a
+            body larger than this maximum, Falcon will raise an instance of
+            :py:class:`~.HTTPPayloadTooLarge`. This option defaults to
+            256 KB.
+
+
     """
     __slots__ = (
         'keep_blank_qs_values',
@@ -1810,6 +1845,7 @@ class RequestOptions(object):
         'strip_url_path_trailing_slash',
         'default_media_type',
         'media_handlers',
+        'asgi_max_buffered_req_body',
     )
 
     def __init__(self):
@@ -1819,3 +1855,4 @@ class RequestOptions(object):
         self.strip_url_path_trailing_slash = False
         self.default_media_type = DEFAULT_MEDIA_TYPE
         self.media_handlers = Handlers()
+        self.asgi_buffered_req_max_size = 256 * 2**10

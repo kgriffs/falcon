@@ -507,9 +507,9 @@ class Response(object):
 
         name = name.lower()
         if name in self._headers:
-            value = self._headers[name] + ', ' + value
-
-        self._headers[name] = value
+            self._headers[name] += ', ' + value
+        else:
+            self._headers[name] = value
 
     def set_headers(self, headers):
         """Set several headers at once.
