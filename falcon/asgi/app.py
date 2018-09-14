@@ -40,8 +40,8 @@ class App(falcon.api.API):
         # PERF(kgriffs): Using a closure was faster in tests on 3.5 and 3.6,
         #   as opposed to a class. Performance was better for both
         #   instantiation and proxying the call to on_event()
-        async def on_event(receive, send):
-            await self._on_event(state, scope, receive, send)
+        async def on_request(receive, send):
+            await self._on_request(state, scope, receive, send)
 
         return on_event
 
@@ -49,13 +49,31 @@ class App(falcon.api.API):
     # Helpers that require self
     # ------------------------------------------------------------------------
 
-    async def _on_event(self, state, scope, receive, send):
+    async def _on_request(self, state, scope, receive, send):
         evt_request = await receive()
         if evt_request['type'] != 'http.request'
             # NOTE(kgriffs): Ignore unrecognized types
             return
 
         max_buffered_body_size = self.req_options.asgi_max_buffered_req_body
+
+
+        # TODO: Convert the receive to a generator that will yield the
+        #   body chunks until exausted. Pass this generator to the request
+        #   class.
+        #
+        #   For await req.stream.read() you can implement it by using
+        #   async for chunk in body until exhausted, and then returning
+        #   the final result.
+        #
+        #   You can also let people iterate directly, in case they want
+        #   to stream the chunks somewhere else.
+        #
+        #   We can also support a shortcut property if they want to
+        #   use it for performance (e.g., res.media). When there is
+        #   no more_body, set that variable to the body. If it isn't
+        #   none, then people know they can use it and don't have to
+        #   bother with the async read pattern.
 
         more_body = evt_request['more_body']
 
