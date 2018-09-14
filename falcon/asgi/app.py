@@ -50,12 +50,28 @@ class App(falcon.api.API):
     # ------------------------------------------------------------------------
 
     async def _on_request(self, state, scope, receive, send):
-        evt_request = await receive()
-        if evt_request['type'] != 'http.request'
-            # NOTE(kgriffs): Ignore unrecognized types
-            return
+        # TODO(kgriffs): Remove this option, since web servers already enforce
+        #   their own max request body sizes.
+        # max_buffered_body_size = self.req_options.asgi_max_buffered_req_body
 
-        max_buffered_body_size = self.req_options.asgi_max_buffered_req_body
+        async def stream():
+            while True:
+                event = await receive()
+                yield event['body']
+
+                # NOTE(kgriffs): Per the ASGI spec, more_body is optional
+                #   and should be considered False if not present.
+                # PERF(kgriffs): event.get() is more elegant, but uses a
+                #   few more CPU cycles.
+                if not ('more_body' in event and event['more_body']):
+                    break
+
+        req_stream = stream()
+
+        async def read():
+            return b''.join([chunk async for chunk in req_stream])
+
+        req_stream.read = read
 
 
         # TODO: Convert the receive to a generator that will yield the
