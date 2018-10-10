@@ -54,6 +54,7 @@ class App(falcon.api.API):
         #   their own max request body sizes.
         # max_buffered_body_size = self.req_options.asgi_max_buffered_req_body
 
+        # TODO: Need a version that doesn't use async generator for Python 3.5
         async def stream():
             while True:
                 event = await receive()
@@ -68,8 +69,27 @@ class App(falcon.api.API):
 
         req_stream = stream()
 
+        # TODO: Need a version that doesn't use async list comprehensions for
+        #   Python 3.5 - also, is there a way for 3.6+ to short-circuit this
+        #   when we know there isn't more body? Receive the first chunk outside
+        #   the generator, then load additional... with flag to know is "Read"
+        #   to simulate forward-only stream semantics.
         async def read():
             return b''.join([chunk async for chunk in req_stream])
+
+        # NOTE(kgriffs): Must work on Python 3.5
+        async def pipe(on_data):
+            while True:
+                event = await receive()
+                on_data(event['body'])
+
+                # NOTE(kgriffs): Per the ASGI spec, more_body is optional
+                #   and should be considered False if not present.
+                # PERF(kgriffs): event.get() is more elegant, but uses a
+                #   few more CPU cycles.
+                if not ('more_body' in event and event['more_body']):
+                    break
+
 
         req_stream.read = read
 
